@@ -1,0 +1,224 @@
+---
+title: 'NYPD Shooting Incidence Data '
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+## Introduction
+
+The following dataset has been chosen as part of the Week 3 assignment to look at the NYPD Shooting Incidence data from 2006 to 2021. The following description comes directly from the metadata of the dataset. This will provide some understanding on the usage and definitions of the data. I am going to specifically look at the timing of when these incidences occur. 
+
+> List of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year.This is a breakdown of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year. This data is manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and includes information about the event, the location and time of occurrence. In addition, information related to suspect and victim demographics is also included. This data can be used by the public to explore the nature of shooting/criminal activity. Please refer to the attached data footnotes for additional information about this dataset.
+
+The [data dictionary](https://data.cityofnewyork.us/api/views/833y-fsy8/) for these fields are as follows:
+
+-   INCIDENT_KEY - Randomly generated persistent ID for each arrest
+-   OCCUR_DATE - Exact date of the shooting incident
+-   OCCUR_TIME - Exact time of the shooting incident
+-   BORO - Borough where the shooting incident occurred
+-   PRECINCT - Precinct where the shooting incident occurred
+-   JURISDICTION_CODE - Jurisdiction where the shooting incident occurred. Jurisdiction codes 0 (Patrol), 1 (Transit) and 2 (Housing) represent NYPD whilst codes 3 and more represent non NYPD jurisdictions
+-   LOCATION_DESC - Location of the shooting incident
+-   STATISTICAL_MURDER_FLAG - Shooting resulted in the victim's death which would be counted as a murder
+-   PERP_AGE_GROUP - Perpetrator's age within a category
+-   PER_SEX - Perpetrator's sex description
+-   PERP_RACE - Perpetrator's race description
+-   VIC_AGE_GROUP - Victim's age within a category
+-   VIC_SEX - Victim's sex description
+-   VIC_RACE - Victim's race description
+-   X_COORD - Midblock X-coordinate for New York State Plane Coordinate System, Long Island Zone, NAD 83, units feet (FIPS 3104)
+-   Y_COORD - Midblock Y-coordinate for New York State Plane Coordinate System, Long Island Zone, NAD 83, units feet (FIPS 3104)
+-   Latitude - Latitude coordinate for Global Coordinate System, WGS 1984, decimal degrees (EPSG 4326)
+-   Longitude - Longitude coordinate for Global Coordinate System, WGS 1984, decimal degrees (EPSG 4326)
+-   Lon_Lat - Longitude and Latitude Coordinates for mapping
+
+### Library Import 
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readr)
+library(lubridate)
+library(reshape2)
+```
+
+## Importing and Data Cleaning 
+The first thing we need to do is import data. 
+
+### Data Import 
+```{r message=TRUE, warning=TRUE}
+nypd_data <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+```
+
+### Data Cleaning 
+There are a number of data variables that need to be factored and the data type has to be changed.
+```{r}
+nypd_data$OCCUR_DATE <- mdy(nypd_data$OCCUR_DATE)
+nypd_data$OCCUR_TIME <- hms(nypd_data$OCCUR_DATE)
+
+col_names <- c('BORO','PRECINCT','JURISDICTION_CODE','LOCATION_DESC','PERP_AGE_GROUP','PERP_SEX','PERP_RACE','VIC_AGE_GROUP','VIC_SEX','VIC_RACE')
+nypd_data[col_names] <- lapply(nypd_data[col_names] ,factor)
+```
+
+I find that it is also much easier to break out some of the time information to get a better sense of what the data can tell us. 
+
+Since I am interested in seeing some of the trends throughout time, I've added on a few columns such as `Year`, `WeekDay` and `Month` which will help understand the time of the data. 
+
+```{r}
+# Remove 
+ nypd_data <- nypd_data %>% filter(!PERP_AGE_GROUP %in% c( "1020", "224", "940"))
+# Add additional columns that help provide a little more color 
+nypd_data <- nypd_data %>% mutate(Month = month(OCCUR_DATE, label=TRUE), Year = year(OCCUR_DATE), WeekDay = wday(OCCUR_DATE, label=TRUE))
+```
+
+### Selecting data
+
+There are a few attributes that may not have much significance to the scope of this analysis:
+
+-   Location Attributes
+    -   **LOCATION_DESC** - one of the main reasons that it is hard to understand exactly what is happening is based on the 59% null values..
+    -   **X_COORD_CD** - I'd assume that the mapping software used by the NYPD or the data set find this information useful. However with the same map it make is difficult to use
+    -   **Y_COORD_CD** - This would account for the same information as above
+    -   **Lon_Lat** - This has been already provided in the Latitude and Longitude attributes
+-   Table elements
+    -   **STATISTICAL_MURDER_FLAG** - This attribute seems to be named a little strange... I know that there are deaths involved in this data and to call it statistical is probably just a rubric to help identify cases. 
+    
+
+```{r}
+drop_col <- c('X_COORD_CD', 'Y_COORD_CD', 'Lon_Lat', 'LOCATION_DESC','STATISTICAL_MURDER_FLAG')
+nypd_data_subset <- nypd_data[,!(names(nypd_data) %in% drop_col)]
+```
+
+
+
+```{r}
+nypd_data_subset %>% summary()
+```
+
+
+### Missing Data 
+As for missing data, there are a few things to consider. Most of the data is available, however there are a few insights: 
+
+* JURISDICTION_CODE has 2 NAs, most likely this was due to incorrect transcription or input error. They probably could be giving a 0 as a large majority of these are coded as 0 for Patrol jurisdiction 
+* For the **PERP_** attributes, there are two types of what at first glance appears to be missing data. UNKNOWN / NAs could fall into a few different cases: 
+  * The unknowns could be cases where the perpetrator has fled the scene. 
+  * The unknowns could be cases where individuals shot themselves
+  * There could be missing data though when you look at the victim information, there are only 65 unknown cases which would mean that the number of bad data entry is a small percentage in these cases. 
+
+To handle this information, I find that keeping the unknowns and NAs in the data are the most likely scenario and better to have some understand of what they are. 
+
+## Analysis
+
+### Are there patterns in time that affect the incidental behavior? 
+
+```{r}
+nypd_data_subset %>% 
+  group_by( Month, WeekDay) %>% 
+  summarize(Incidences = n()) %>% 
+  ggplot(aes(x=Month, y=Incidences, color=WeekDay, group=WeekDay)) + geom_line() +
+scale_color_brewer(palette="Paired")
+```
+
+I was curious if the week of the day had any effect on the incidences; and we can see that there are a few observations.
+
+1. We see that over the summer between May and September there is an uptick to incidences 
+2. There is a visual difference where the trends on Saturday and Sunday are higher
+3. The trends compound where we see that on Saturday and Sunday has a much higher incidence rate than the rest of the year. 
+
+This could suggest that it could be linked to the following: 
+* School aged children have a high incidence rate on the weekends and between school sessions
+* Weekends provide more opportunities outside traditional "work days" 
+* Summers provide more opportunities for people to be in closer proximity 
+
+Lets just look at how over the years what the incidents were reported.. 
+```{r echo=FALSE}
+nypd_data_subset %>% 
+  group_by(Year, WeekDay) %>% 
+  summarize(Incidences = n()) %>% 
+  ggplot(aes(x=Year, y=Incidences, group=WeekDay, color=WeekDay)) + geom_line() +
+scale_color_brewer(palette="Paired")
+```
+We see that earlier 2006 to around 2013 there had been a larger incidence of incidents that occurred on the weekends on Saturday and Sundays. After 2013, we see that the weekends start converging which could be due to a number of variables that are regulatory, or satisfaction levels. This would be hard to find an answer without any further sources.
+
+### What is the age distribution? 
+Here we take the data and cast the information in such a way to understand the perpetrator's age group and sex. 
+```{r}
+nypd_data_subset %>% 
+  filter(!PERP_AGE_GROUP %in% c(NA)) %>% 
+  group_by(PERP_AGE_GROUP, PERP_SEX) %>% 
+  summarize(Incidences = n()) %>% 
+  #mutate(IncidencePct = round(Incidences / sum(Incidences),3)) %>%  
+  dcast(PERP_AGE_GROUP  ~ PERP_SEX)
+```
+
+We see that the perpetrators in this data is predominantly male and between the ages of 18 and 44 which span two age groups. So we can at least rule out a dominant effect that school aged children are part of the incidents that have been recorded. We do need to highlight that the unknown column would be cases in which an incident was reported and the victim had not been able to identify or remember the perpetrator. 
+
+### Linear Model 
+
+```{r}
+nypd_data_lm <- nypd_data_subset %>% 
+  group_by( Month) %>% 
+  summarize(Incidences = n())
+
+
+mod <- lm(Incidences ~ Month, data = nypd_data_lm )
+
+summary(mod)
+```
+
+Showing the output for a linear model here but not sure how to interpret these results as we haven't taken linear models in any class at this point. 
+
+## What about the victims? 
+Here we take the information above and try to display in a slightly different way to get an understanding of the information.
+```{r}
+nypd_data_subset %>% 
+  filter(!VIC_AGE_GROUP %in% c(NA)) %>% 
+  group_by(VIC_AGE_GROUP, VIC_SEX) %>% 
+  summarize(Incidences = n()) %>% 
+  dcast(VIC_AGE_GROUP  ~ VIC_SEX)
+```
+
+
+We see that most of the incidences are against a majority of the 18-44 male population.  Which does display that there seems to be a similar distribution of age groups where these incidences occur. So it doesn't give us enough information so lets consider race as a potential factor. 
+
+```{r}
+nypd_data_subset %>% 
+  filter(!VIC_AGE_GROUP %in% c(NA)) %>% 
+  group_by(VIC_AGE_GROUP, VIC_RACE) %>% 
+  summarize(Incidences = n()) %>% 
+  ggplot(aes(x=VIC_AGE_GROUP, fill=VIC_RACE, group=VIC_RACE,  y=Incidences)) + geom_col() +
+scale_color_brewer(palette="Paired") 
+```
+There is a high proportion of Black victims, lets see if the proportions are similar for perpetrators within the dataset. 
+
+```{r echo=FALSE}
+nypd_data_subset %>% 
+  filter(!PERP_AGE_GROUP %in% c(NA)) %>% 
+  group_by(PERP_AGE_GROUP, PERP_RACE) %>% 
+  summarize(Incidences = n()) %>% 
+  ggplot(aes(x=PERP_AGE_GROUP, fill=PERP_RACE, group=PERP_RACE,  y=Incidences)) + geom_col() +
+scale_color_brewer(palette="Paired") 
+```
+It does appear that the only difference we see between the age distribution is that there more 18-24 perpetrators than there are 18-24 victims. One might say there is a bit of a signal that the perpetrators would be younger and more violent against older victims. However this is a rather rough way to really assess this especially in aggregate. 
+
+This information can be sliced and diced in many more various ways.. I would have liked to take some of the location information (LONG/LAT) and taken a further look at certain hot spots where these incidences occurred. One might be able to further assess if these locations are confined in certain places and thus could alternative solutions be done to help the violence subside. 
+
+If we could have access to more demographic information data, I think that there would be a different story about the data. Things like population density by block or socioeconomic prosperity data could help provide an alternative image into why the insights we just looked at may provide a new different story. That gives us the opportunity to look at bias in this dataset. 
+
+## Bias
+
+If we wanted to be Fox News in this case, we'd stop and say that there is a clear connection between the Black community (and other minority groups) and gun violence according to this data set. There are so many other questions that need to be asked and answered before one might want to make any sort of suggestion about a particular signal in the data. We'd need to ask many other questions such as: 
+
+* Are the precincts located in communities where the demographics are a higher proportion Black? If that is the case, is there crime that occurs in other places that isn't recorded due to not being around in those areas. 
+* Are different jurisdictions that do not fall into this data that could tell a different story? 
+* Perhaps there are equivalent incidences that occur that might not be gun shootings but rather knifes, and other instruments of violence that are not taken into consideration of this information? 
+* As mentioned earlier, is there a connection between socioeconomic status in these areas that may contribute to these incidence but unrelated to race. 
+
+I can see how easy to look at this information and automatically have prejudice. It is hard to overlook what appears to be hard fact. **Even throughout this assignment, you have internal moral questions on if you should even analyze data with race** as part of the analysis. Is there not a more appropriate way of displaying the same information? 
+
+
+
+```{r}
+ sessionInfo()
+```
